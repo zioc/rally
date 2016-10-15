@@ -14,6 +14,7 @@ var widgetDirective = function($compile) {
     _widgets: {
       Pie: "pie",
       StackedArea: "stack",
+      TimeStackedArea: "timestack",
       Lines: "lines",
       Histogram: "histogram"
     },
@@ -85,6 +86,77 @@ var widgetDirective = function($compile) {
       }
       Chart._render(node, data_, chart, do_after);
     },
+    // NOTE: nvd3 doesn't support to stack time series with different datasets...
+    // see https://github.com/novus/nvd3/issues/220
+    // We have to resample all iteration measurements to a common tick...
+    // Straigh d3 may would be more felxible to do so.
+    timestack: function(node, data, opts, do_after) {
+      //NOTE: here data doesn't represents specific iteration data, but all complete output:
+      //"complete_output": [[{"widget": "StackedArea", "title": "interim_rate measurements", "data": [["interim_rate", [[1476452786.953, 752.58], [1476452788.12, 645.44],
+      //TODO?: process data somewhere else and call regular stack chart
+      var chart = nv.models.stackedAreaChart()
+        .x(function(d) { return d[0] })
+        .y(function(d) { return d[1] })
+        .useInteractiveGuideline(opts.guide)
+        .showControls(opts.controls)
+        .showLegend(false)
+        .clipEdge(true);
+      chart.xAxis
+        .axisLabel(opts.xname)
+        .tickFormat(opts.xformat)
+        .showMaxMin(opts.showmaxmin);
+      chart.yAxis
+        .orient("left")
+        .tickFormat(d3.format(opts.yformat || ",.3f"));
+      var colorizer = new Chart.colorizer(), data_ = [];
+      // figure out how measurements we have, note that we expect iterations to give all measurements or nothing
+      var mes_cnt = d3.max(data.map(function(d) { if (d[0]){return d[0].data.length} else {return 0} }));
+      //console.log(mes_cnt);
+      // first pass to find the extent, sould be done with appropriate map call
+      var extent = [];
+      for (var mes=0; mes<mes_cnt; mes++) {
+        extent[mes]=[];
+        for (var i in data) {
+          if (! data[i].length) {continue; }
+          //console.log(data[i][0].data[mes]);
+          extent[mes] = d3.extent(d3.merge([extent[mes], data[i][0].data[mes][1].map(function(d) { return d[0]; })]));
+        }
+      }
+      //console.log(extent);
+      var domain = [];
+      for (var mes=0; mes<mes_cnt; mes++) {
+        //TODO: when we'll switch to d3 v4.x, we'll be able to do:
+        // var domain = d3.ticks(extent[mes][0], extent[mes][1], 250);
+        domain[mes] = d3.range(extent[mes][0], extent[mes][1], (extent[mes][1]-extent[mes][0])/(100));
+      }
+      //console.log(domain);
+      // 2nd pas to interpolate data to domain
+      for (var mes=0; mes<mes_cnt; mes++) {
+        //var res = domain[mes].map(function(d){return [d, 0.5]});
+        for (var i in data) {
+        //for (var i in [1]) {
+          if (! data[i].length) {continue; }
+          var sample = data[i][0].data[mes];
+          //console.log(sample); // sample[0]: name, sample[1]:[list of points]
+          var range = d3.extent(sample[1].map(function(d) { return d[0]; }));
+          var bisect = d3.bisector(function(d) { return d[0]; });
+          var res = domain[mes].map(function(d){
+              if (d <= range[0]) { return [d, 0] }
+              if (d > range[1]) { return [d, 0] }
+              var index = bisect.left(sample[1], d);
+              //console.log(index);
+              if (index == sample[1].length - 1 ) { return [d, sample[1][index-1][1]] }
+              // Poor's man resampling... Efficient enough anyway is output is not too variable
+              var interpolated = sample[1][index-1][1] + (sample[1][index][1] - sample[1][index-1][1]) * (d - sample[1][index-1][0]) / (sample[1][index][0] - sample[1][index-1][0])
+              //console.log(interpolated);
+              return [d, interpolated];
+          });
+          data_.push({key:i, values:res, color:colorizer.get_color(i)});
+        }
+      }
+      //console.log(data_);
+      Chart._render(node, data_, chart, do_after);
+     },
     lines: function(node, data, opts, do_after) {
       var chart = nv.models.lineChart()
         .x(function(d) { return d[0] })
